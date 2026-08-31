@@ -29,9 +29,7 @@ Run options:
     --workdir <path>      Use existing directory instead of creating a fresh one
                           (standalone only; requires: chains are not run)
     --report <path>       Write a two-column HTML report (rendered docs +
-                          the commands actually run and their output) to <path>.
-                          ui_test screenshots are written to a sibling
-                          images/ directory — publish both.
+                          the commands actually run and their output) to <path>
     --tui                 Run in an interactive two-column TUI (needs 'rich')
     --iterative           With --tui, advance one step per keypress (arrow/space)
     --verbose             Print commands as they execute
@@ -53,7 +51,6 @@ import argparse
 import base64
 import collections
 import glob
-import hashlib
 import json
 import os
 import platform
@@ -1380,7 +1377,7 @@ def _screenshot_filename(raw):
     return name
 
 
-def _ui_action_md_blocks(ui_test_spec, images_dir=None, assets=None):
+def _ui_action_md_blocks(ui_test_spec, images_dir=None):
     """Markdown blocks for ui_test actions carrying a `text:` and/or
     `screenshot:` field.
 
@@ -1391,20 +1388,15 @@ def _ui_action_md_blocks(ui_test_spec, images_dir=None, assets=None):
 
     With no `images_dir` (the published-tutorial generator), screenshots use a
     relative link `images/<file>.png` so it resolves from the generated .md in
-    outputs/. With an `images_dir` (the HTML report), the capture is registered
-    in `assets` under a content-addressed name and linked as `images/<sha>.png`;
-    write_html_report copies the registered files next to the report. Falls
-    back to the relative link if the capture is missing (e.g. its step failed).
-
-    Hashing the content rather than keeping the spec's filename is what makes
-    the report cheap to publish repeatedly: an unchanged screenshot keeps its
-    name across runs, specs and platforms, so a report committed to a Pages
-    branch re-uses the copy already stored there instead of adding another. It
-    also removes any chance of two specs colliding on a filename.
+    outputs/. With an `images_dir` (the self-contained HTML report), inline the
+    captured PNG as a base64 `data:` URI when the file exists — so the report
+    stays a single portable file that renders the screenshots even when served
+    from GitHub Pages; fall back to the relative link if the capture is missing.
 
     Returns a list of blocks; each block is a self-contained markdown string
     (a caption may be multi-line) that the caller emits followed by a blank
     line."""
+    import base64 as _base64
     blocks = []
     for t in ui_test_spec.get("tests", []):
         caption = t.get("text", "")
@@ -1419,13 +1411,10 @@ def _ui_action_md_blocks(ui_test_spec, images_dir=None, assets=None):
             path = os.path.join(images_dir, fname)
             try:
                 with open(path, "rb") as fh:
-                    digest = hashlib.sha256(fh.read()).hexdigest()[:16]
+                    b64 = _base64.b64encode(fh.read()).decode("ascii")
+                src = f"data:image/png;base64,{b64}"
             except OSError:
                 pass  # capture missing (e.g. step failed) — keep relative link
-            else:
-                src = f"images/{digest}.png"
-                if assets is not None:
-                    assets[f"{digest}.png"] = path
         blocks.append(f"![{alt}]({src})")
     return blocks
 
@@ -2189,13 +2178,10 @@ def cmd_run(args):
     ok = results.summary()
 
     # Build the report BEFORE cleanup removes the working directories -- the
-    # payload's rows reference ui_test screenshots that still live in them, and
-    # the copies below have to be taken while the originals exist.
+    # payload inlines ui_test screenshots from them.
     if _REPORT is not None:
-        report_assets = {}
         try:
-            payload = build_report_payload(_REPORT, results,
-                                           assets=report_assets)
+            payload = build_report_payload(_REPORT, results)
         except Exception as e:
             payload = None
             print(f"  {yellow(f'report data could not be built: {e}')}")
@@ -2203,22 +2189,15 @@ def cmd_run(args):
             if getattr(args, "report", None):
                 try:
                     report_path = os.path.abspath(args.report)
-                    report_dir = _prepare_output_dir(report_path)
                     with open(report_path, "w") as f:
                         f.write(render_report_html(payload))
-                    _write_report_images(report_assets, report_dir)
                     print(f"  report : {report_path}")
                 except Exception as e:
                     print(f"  {yellow(f'report generation failed: {e}')}")
             if getattr(args, "results", None):
                 try:
                     results_path = os.path.abspath(args.results)
-                    results_dir = _prepare_output_dir(results_path)
                     write_results_json(payload, results_path)
-                    # The payload only names its screenshots, so they travel
-                    # beside it -- otherwise `report --from-results` on another
-                    # machine renders with every image broken.
-                    _write_report_images(report_assets, results_dir)
                     print(f"  results: {results_path}")
                 except Exception as e:
                     print(f"  {yellow(f'results generation failed: {e}')}")
@@ -2236,15 +2215,14 @@ def cmd_run(args):
 # HTML REPORT (run --report)
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _step_to_markdown(step, sec_num, sub_step, images_dir=None, assets=None):
+def _step_to_markdown(step, sec_num, sub_step, images_dir=None):
     """Render a single step to the same markdown the generator produces.
     Returns (markdown_str, next_sub_step). Mirrors the per-step block in
     cmd_generate so the report's left column matches the published tutorial.
 
-    When `images_dir` is given, ui_test screenshots are registered in `assets`
-    and linked by content hash (for the HTML report, whose images are written
-    alongside it); otherwise they render as relative `images/<file>.png` links
-    (for the published tutorial / TUI)."""
+    When `images_dir` is given, ui_test screenshots are inlined as base64
+    `data:` URIs (for the self-contained report); otherwise they render as
+    relative `images/<file>.png` links (for the published tutorial / TUI)."""
     out = []
 
     def emit(t=""):
@@ -2299,7 +2277,7 @@ def _step_to_markdown(step, sec_num, sub_step, images_dir=None, assets=None):
             emit(expand_vars(launch))
             emit("```")
             emit()
-        for block in _ui_action_md_blocks(ui_test_spec, images_dir, assets):
+        for block in _ui_action_md_blocks(ui_test_spec, images_dir):
             emit_block(block)
             emit()
 
@@ -2342,21 +2320,17 @@ def _section_preamble_markdown(section, step_number, is_step):
     return "\n".join(out).strip()
 
 
-def build_report_model(collector, assets=None):
+def build_report_model(collector):
     """Turn the collector's per-spec execution data into a JSON-serializable
     model: a list of tutorials, each with rows. A row has rendered markdown
-    (left column) and a list of execution records (right column).
-
-    Screenshots referenced by the model are registered in `assets` as
-    {content-addressed filename: source path} for the caller to copy next to
-    the report."""
+    (left column) and a list of execution records (right column)."""
     tutorials = []
     for entry in collector.specs:
         spec = entry["spec"]
         rows = []
 
         # Where this spec's ui_test screenshots were written, so they can be
-        # copied next to the report. Mirrors handle_ui_test's resolution: the
+        # inlined into the report. Mirrors handle_ui_test's resolution: the
         # global output images dir if set, else <workdir>/images. The report is
         # built before cleanup(), so these files still exist.
         spec_workdir = entry.get("workdir")
@@ -2405,9 +2379,7 @@ def build_report_model(collector, assets=None):
             sec_num = (step_number - 1) if is_step else None
             sub_step = 1
             for step in steps:
-                md, sub_step = _step_to_markdown(
-                    step, sec_num, sub_step, images_dir, assets
-                )
+                md, sub_step = _step_to_markdown(step, sec_num, sub_step, images_dir)
                 execs = collector.execs_for(step)
                 # Runner-only steps (e.g. check_file) render no markdown. Give
                 # them a small left-column note so the row isn't visually empty.
@@ -2704,74 +2676,17 @@ def _capture_fds():
         tmp.close()
 
 
-def _prepare_output_dir(output_path):
-    """Absolute directory holding `output_path`, created if missing — writing
-    to `out/index.html` shouldn't require the caller to mkdir first."""
-    d = os.path.dirname(os.path.abspath(output_path))
-    os.makedirs(d, exist_ok=True)
-    return d
-
-
-def _write_report_images(assets, report_dir):
-    """Copy the screenshots the report links to into <report_dir>/images/.
-
-    Names are content hashes, so a file already present is byte-identical and
-    can be skipped — which is also why writing the report into a directory that
-    already holds a previous run's images costs nothing for the screenshots
-    that didn't change."""
-    if not assets:
-        return
-    images_out = os.path.join(report_dir, "images")
-    os.makedirs(images_out, exist_ok=True)
-    for name, src in sorted(assets.items()):
-        dest = os.path.join(images_out, name)
-        if not os.path.exists(dest):
-            shutil.copyfile(src, dest)
-
-
-def _collect_sibling_images(results_paths, out_dir):
-    """Copy each results payload's sibling images/ into <out_dir>/images/.
-
-    Content-addressed names mean two legs that captured the same screenshot
-    land on the same filename, so merging legs can't collide — and rendering
-    back into the directory the payload already sits in is a no-op."""
-    copied = 0
-    for src_json in results_paths:
-        src = os.path.join(os.path.dirname(os.path.abspath(src_json)), "images")
-        if not os.path.isdir(src):
-            continue
-        dest_dir = os.path.join(out_dir, "images")
-        os.makedirs(dest_dir, exist_ok=True)
-        for name in sorted(os.listdir(src)):
-            dest = os.path.join(dest_dir, name)
-            if not os.path.exists(dest):
-                shutil.copyfile(os.path.join(src, name), dest)
-                copied += 1
-    return copied
-
-
 # The payload is the whole report: `build_report_model` already returns a
 # JSON-serializable model (rows of rendered markdown + execution records), so
 # rendering needs nothing from the running process. Splitting the payload out of
 # the writer is what lets a run on one machine be rendered on another -- see
 # `run --results` and `report --from-results`.
-#
-# Screenshots are the one thing the payload does NOT carry. Rows reference them
-# as `images/<sha>.png` and the bytes are copied next to whichever artifact is
-# written, so moving a payload between machines means moving its sibling
-# images/ directory too. They used to be inlined as base64 data: URIs, which
-# made the payload self-sufficient but also made every report ~10 MB and
-# defeated any storage that dedupes by content.
 REPORT_PAYLOAD_VERSION = 1
 
 
-def build_report_payload(collector, results, platform_label=None, assets=None):
+def build_report_payload(collector, results, platform_label=None):
     """The complete, self-contained report data. `platform_label` names the
-    machine the steps RAN on, which is not necessarily this one.
-
-    Screenshots referenced by the rows are registered in `assets` as
-    {content-addressed filename: source path}, for the caller to copy next to
-    the artifact it writes."""
+    machine the steps RAN on, which is not necessarily this one."""
     return {
         "version": REPORT_PAYLOAD_VERSION,
         "generated_platform": platform_label or platform.system(),
@@ -2780,7 +2695,7 @@ def build_report_payload(collector, results, platform_label=None, assets=None):
             "failed": results.failed,
             "skipped": results.skipped,
         },
-        "tutorials": build_report_model(collector, assets),
+        "tutorials": build_report_model(collector),
     }
 
 
@@ -2806,12 +2721,8 @@ def write_results_json(payload, output_path):
 
 
 def write_html_report(collector, output_path, results):
-    assets = {}
-    payload = build_report_payload(collector, results, assets=assets)
-    out_dir = _prepare_output_dir(output_path)
     with open(output_path, "w") as f:
-        f.write(render_report_html(payload))
-    _write_report_images(assets, out_dir)
+        f.write(render_report_html(build_report_payload(collector, results)))
 
 
 _REPORT_HTML_TEMPLATE = r"""<!DOCTYPE html>
@@ -3974,12 +3885,8 @@ def cmd_report(args):
         sys.exit(2)
 
     out = os.path.abspath(args.output)
-    out_dir = _prepare_output_dir(out)
     with open(out, "w") as f:
         f.write(render_report_html(payload))
-    # A payload names its screenshots rather than carrying them, so bring each
-    # leg's sibling images/ along or the rendered report shows broken images.
-    _collect_sibling_images(args.results_json, out_dir)
     summ = payload.get("summary") or {}
     print(f"  report : {out}")
     print(f"  from   : {', '.join(args.results_json)} "

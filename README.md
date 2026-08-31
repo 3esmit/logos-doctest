@@ -72,7 +72,7 @@ flags:
 | `--output-dir DIR`      | Run into `DIR` and **keep it** (created if missing, never auto-deleted). Chained specs land in `DIR/<project_name>/`. Use this when you want to inspect or reuse the built result. |
 | `--workdir DIR`         | Run **standalone** into an existing directory (no `requires:` chain). Deleted on exit unless `--keep-workdir`.                                                                     |
 | `--keep-workdir`        | Don't delete the temp/work directory after the run.                                                                                                                                |
-| `--report PATH`         | Write a two-column HTML report (rendered docs ⟷ commands run and their output), plus a sibling `images/` dir for screenshots.                                                       |
+| `--report PATH`         | Write a self-contained two-column HTML report (rendered docs ⟷ commands run and their output).                                                                                     |
 | `--tui` / `--iterative` | Live two-column terminal view; `--iterative` advances one step per keypress. Needs `rich`.                                                                                         |
 | `--release TAG`         | Pin every `{release}` placeholder in GitHub URLs to a git tag.                                                                                                                     |
 | `--release-for REPO=REF`| Pin one repo's `{release}` to a git tag or commit hash (repeatable; overrides `--release` for that repo).                                                                          |
@@ -123,9 +123,7 @@ chains are skipped). Prefer `--output-dir` for chained specs.
 
 ## Reviewing what ran (`--report`)
 
-`--report PATH` writes an HTML report — the `.html` plus a sibling `images/`
-directory for any `ui_test` screenshots, so copy or publish both — with two
-columns per step:
+`--report PATH` writes a self-contained HTML report with two columns per step:
 
 - **left** — the rendered documentation markdown (identical to `doctest generate`),
 - **right** — the command(s) actually executed at that step and their output, with
