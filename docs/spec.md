@@ -232,11 +232,15 @@ does not affect what the UI test executes. Use it to narrate what each
 screenshot shows or to annotate a step inline, rather than collecting all prose
 in `post_text`.
 
-The two-column HTML report (`--report`) inlines each captured screenshot as a
-base64 `data:` URI, so the report stays a single self-contained file that
-renders the screenshots even when served from GitHub Pages (where only the
-`index.html` is published). If a capture is missing (e.g. its step failed), the
-report falls back to the relative `images/<file>.png` link.
+The two-column HTML report (`--report`) writes each captured screenshot into an
+`images/` directory beside the report and links it as `images/<sha>.png`, named
+by a hash of the file's content. Publishing the report therefore means
+publishing that directory too, not just the `.html`. Content-addressed names
+mean an unchanged screenshot keeps its filename across runs, specs and
+platforms, so re-publishing into a location that already has it costs nothing —
+which matters when a report is committed to a Pages branch on every CI run. If
+a capture is missing (e.g. its step failed), the report falls back to the
+relative `images/<file>.png` link.
 
 **Runner behavior (launch mode):** Runs setup commands, **pre-builds the app**, launches it in the background with `QT_QPA_PLATFORM=offscreen`, waits for the QML inspector to be available, generates a `.mjs` test file, runs it, then kills the app. Reports pass/fail.
 
@@ -551,7 +555,7 @@ When running standalone (no `requires:`), `project_name` is ignored and the runn
 
 ### HTML execution report (`--report`)
 
-`run --report <path>` writes a self-contained HTML report next to (or instead of) the console output. The report has **two columns per step**:
+`run --report <path>` writes an HTML report next to (or instead of) the console output — the `.html` plus a sibling `images/` directory holding any `ui_test` screenshots. The report has **two columns per step**:
 
 - **Left:** the step's rendered tutorial markdown — identical to what `generate` produces, so the report shows exactly what the reader sees.
 - **Right:** the command(s) actually executed for that step and their captured output, each with a pass/fail badge and exit code.
