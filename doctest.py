@@ -915,8 +915,15 @@ def run_cmd(cmd, workdir, verbose=False, capture=False, timeout=None):
                 timeout=timeout,
             )
             return result.returncode, ""
-    except subprocess.TimeoutExpired:
-        return 124, "command timed out"
+    except subprocess.TimeoutExpired as exc:
+        output = exc.output or ""
+        # TimeoutExpired carries bytes even with text=True; the timeout can
+        # also interrupt a UTF-8 character. stderr is already merged above.
+        if isinstance(output, bytes):
+            output = output.decode("utf-8", errors="replace")
+        if output and not output.endswith("\n"):
+            output += "\n"
+        return 124, output + "command timed out"
     except Exception as e:
         return 1, str(e)
 
